@@ -1,4 +1,3 @@
-const cheerio = require('cheerio');
 const httpClient = require('../utils/httpClient');
 const Validator = require('../utils/validator');
 const { logger } = require('../utils/logger');
@@ -6,7 +5,7 @@ const { cache, getCacheKey } = require('../utils/cache');
 
 class TikTokService {
   constructor() {
-    this.baseURL = 'https://www.tiktok.com';
+    this.apiBase = 'https://www.tikwm.com/api/';
   }
 
   async fetchMetadata(url) {
@@ -28,17 +27,30 @@ class TikTokService {
         return cached;
       }
 
-      const response = await httpClient.get(sanitizedURL, {
+      const response = await httpClient.get(this.apiBase, {
+        params: { url: sanitizedURL },
         headers: {
-          'Referer': 'https://www.tiktok.com/',
-          'Origin': 'https://www.tiktok.com'
-        }
+          'Accept': 'application/json',
+        },
       });
 
-      const html = response.data;
-      const $ = cheerio.load(html);
+      const body = response.data;
 
-      const metadata = this.extractMetadataFromHTML(html, $);
+      if (body.code !== 0 || !body.data) {
+        throw new Error('Failed to extract video metadata');
+      }
+
+      const d = body.data;
+
+      const metadata = {
+        username: d.author?.unique_id || d.author?.nickname || null,
+        caption: (d.title || '').trim(),
+        thumbnail: d.cover || d.origin_cover || null,
+        no_wm: d.play || null,
+        wm: d.wmplay || d.play || null,
+        audio: d.music || null,
+        video_id: String(d.id || ''),
+      };
 
       if (!metadata.username || !metadata.video_id) {
         throw new Error('Failed to extract video metadata');
@@ -47,111 +59,11 @@ class TikTokService {
       cache.set(cacheKey, metadata);
       return metadata;
     } catch (error) {
+      if (error.message.includes('Invalid or unsupported TikTok URL') ||
+          error.message.includes('URL not allowed')) {
+        throw error;
+      }
       throw new Error(`Failed to fetch TikTok metadata: ${error.message}`);
-    }
-  }
-
-  extractMetadataFromHTML(html, $) {
-    let metadata = {
-      username: null,
-      caption: null,
-      thumbnail: null,
-      no_wm: null,
-      wm: null,
-      audio: null,
-      video_id: null
-    };
-
-    try {
-      // Method 1: Extract from SIGI_STATE (Primary method)
-      const sigiStateMatch = html.match(/window\["SIGI_STATE"\]\s*=\s*({.+?});/);
-      if (sigiStateMatch) {
-        try {
-          const sigiState = JSON.parse(sigiStateMatch[1]);
-          const itemModule = sigiState?.ItemModule || {};
-          const videoData = Object.values(itemModule)[0];
-
-          if (videoData) {
-            metadata.username = videoData.author?.uniqueId || videoData.author?.id;
-            metadata.caption = videoData.desc || '';
-            metadata.video_id = videoData.id;
-
-            const videoAddr = videoData.video?.downloadAddr || videoData.video?.playAddr;
-            const coverAddr = videoData.video?.cover || videoData.video?.dynamicCover;
-            const musicAddr = videoData.music?.playUrl;
-
-            if (videoAddr) {
-              metadata.no_wm = videoAddr;
-              metadata.wm = videoAddr;
-            }
-
-            if (coverAddr) {
-              metadata.thumbnail = coverAddr;
-            }
-
-            if (musicAddr) {
-              metadata.audio = musicAddr;
-            }
-          }
-        } catch (parseError) {
-          logger.warn({ err: parseError }, 'Failed to parse SIGI_STATE');
-        }
-      }
-
-      // Method 2: Extract from __UNIVERSAL_DATA_FOR_REHYDRATION__ (Backup method)
-      if (!metadata.username) {
-        const universalDataMatch = html.match(/window\["__UNIVERSAL_DATA_FOR_REHYDRATION__"\]\s*=\s*({.+?});/);
-        if (universalDataMatch) {
-          try {
-            const universalData = JSON.parse(universalDataMatch[1]);
-            const videoData = universalData?.default?.["webapp.video-detail"]?.["*"]?.statusCode === 0
-              ? universalData.default["webapp.video-detail"]["*"].itemInfo?.itemStruct
-              : null;
-
-            if (videoData) {
-              metadata.username = videoData.author?.uniqueId;
-              metadata.caption = videoData.desc || '';
-              metadata.video_id = videoData.id;
-
-              const videoAddr = videoData.video?.downloadAddr || videoData.video?.playAddr;
-              const coverAddr = videoData.video?.cover;
-              const musicAddr = videoData.music?.playUrl;
-
-              if (videoAddr) {
-                metadata.no_wm = videoAddr;
-                metadata.wm = videoAddr;
-              }
-
-              if (coverAddr) {
-                metadata.thumbnail = coverAddr;
-              }
-
-              if (musicAddr) {
-                metadata.audio = musicAddr;
-              }
-            }
-          } catch (parseError) {
-            logger.warn({ err: parseError }, 'Failed to parse universal data');
-          }
-        }
-      }
-
-      // Method 3: Extract from meta tags (Last resort)
-      if (!metadata.username) {
-        metadata.username = $('meta[property="profile:username"]').attr('content') ||
-                           $('meta[name="twitter:title"]').attr('content')?.split(' ')[0];
-        metadata.caption = $('meta[property="og:description"]').attr('content') ||
-                          $('meta[name="description"]').attr('content');
-        metadata.thumbnail = $('meta[property="og:image"]').attr('content');
-      }
-
-      if (metadata.caption) {
-        metadata.caption = metadata.caption.trim();
-      }
-
-      return metadata;
-    } catch (error) {
-      throw new Error(`Failed to extract metadata: ${error.message}`);
     }
   }
 

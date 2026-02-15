@@ -1,5 +1,3 @@
-const cheerio = require('cheerio');
-
 // Mock httpClient before requiring tiktokService
 jest.mock('../../src/utils/httpClient', () => ({
   get: jest.fn(),
@@ -10,39 +8,25 @@ const httpClient = require('../../src/utils/httpClient');
 const tiktokService = require('../../src/services/tiktokService');
 const { cache } = require('../../src/utils/cache');
 
-// Helper: build a fake TikTok HTML page with SIGI_STATE
-function buildSigiHtml(videoData) {
-  const sigiState = { ItemModule: { '123': videoData } };
-  return `<html><script>window["SIGI_STATE"]=${JSON.stringify(sigiState)};</script></html>`;
-}
-
-// Helper: build a fake TikTok HTML page with __UNIVERSAL_DATA_FOR_REHYDRATION__
-function buildUniversalHtml(videoData) {
-  const universalData = {
-    default: {
-      'webapp.video-detail': {
-        '*': {
-          statusCode: 0,
-          itemInfo: { itemStruct: videoData },
-        },
+// Helper: build a tikwm API response
+function buildApiResponse(overrides = {}) {
+  return {
+    data: {
+      code: 0,
+      data: {
+        id: '7777777777',
+        title: 'Dancing cat video #viral',
+        author: { unique_id: 'catdancer', nickname: 'Cat Dancer' },
+        play: 'https://v16.tiktokcdn.com/video_nowm.mp4',
+        wmplay: 'https://v16.tiktokcdn.com/video_wm.mp4',
+        music: 'https://sf16.tiktokcdn.com/audio.mp3',
+        cover: 'https://p16.tiktokcdn.com/cover.jpg',
+        origin_cover: 'https://p16.tiktokcdn.com/origin_cover.jpg',
+        ...overrides,
       },
     },
   };
-  return `<html><script>window["__UNIVERSAL_DATA_FOR_REHYDRATION__"]=${JSON.stringify(universalData)};</script></html>`;
 }
-
-const sampleVideoData = {
-  id: '7777777777',
-  desc: 'Dancing cat video #viral',
-  author: { uniqueId: 'catdancer', id: 'uid99' },
-  video: {
-    downloadAddr: 'https://v16.tiktokcdn.com/video.mp4',
-    playAddr: 'https://v16.tiktokcdn.com/play.mp4',
-    cover: 'https://p16.tiktokcdn.com/cover.jpg',
-    dynamicCover: 'https://p16.tiktokcdn.com/dynamic.gif',
-  },
-  music: { playUrl: 'https://sf16.tiktokcdn.com/audio.mp3' },
-};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -50,111 +34,59 @@ beforeEach(() => {
 });
 
 describe('TikTokService', () => {
-  // ─── extractMetadataFromHTML ──────────────────────────────────────
-  describe('extractMetadataFromHTML', () => {
-    it('extracts all fields from SIGI_STATE', () => {
-      const html = buildSigiHtml(sampleVideoData);
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.username).toBe('catdancer');
-      expect(meta.caption).toBe('Dancing cat video #viral');
-      expect(meta.video_id).toBe('7777777777');
-      expect(meta.no_wm).toBe('https://v16.tiktokcdn.com/video.mp4');
-      expect(meta.wm).toBe('https://v16.tiktokcdn.com/video.mp4');
-      expect(meta.audio).toBe('https://sf16.tiktokcdn.com/audio.mp3');
-      expect(meta.thumbnail).toBe('https://p16.tiktokcdn.com/cover.jpg');
-    });
-
-    it('falls back to playAddr when downloadAddr is missing', () => {
-      const data = {
-        ...sampleVideoData,
-        video: { playAddr: 'https://play.url/v.mp4', cover: 'https://c.jpg' },
-      };
-      const html = buildSigiHtml(data);
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.no_wm).toBe('https://play.url/v.mp4');
-    });
-
-    it('falls back to author.id when uniqueId is missing', () => {
-      const data = { ...sampleVideoData, author: { id: 'fallback_id' } };
-      const html = buildSigiHtml(data);
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.username).toBe('fallback_id');
-    });
-
-    it('extracts from __UNIVERSAL_DATA_FOR_REHYDRATION__ when SIGI_STATE absent', () => {
-      const html = buildUniversalHtml(sampleVideoData);
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.username).toBe('catdancer');
-      expect(meta.video_id).toBe('7777777777');
-      expect(meta.no_wm).toBe('https://v16.tiktokcdn.com/video.mp4');
-    });
-
-    it('falls back to meta tags when no JS data', () => {
-      const html = `<html><head>
-        <meta property="profile:username" content="metatag_user" />
-        <meta property="og:description" content="A cool video" />
-        <meta property="og:image" content="https://thumb.jpg" />
-      </head></html>`;
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.username).toBe('metatag_user');
-      expect(meta.caption).toBe('A cool video');
-      expect(meta.thumbnail).toBe('https://thumb.jpg');
-    });
-
-    it('trims caption whitespace', () => {
-      const data = { ...sampleVideoData, desc: '  spaced out  ' };
-      const html = buildSigiHtml(data);
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.caption).toBe('spaced out');
-    });
-
-    it('returns falsy fields for empty HTML', () => {
-      const html = '<html></html>';
-      const $ = cheerio.load(html);
-      const meta = tiktokService.extractMetadataFromHTML(html, $);
-
-      expect(meta.username).toBeFalsy();
-      expect(meta.no_wm).toBeFalsy();
-      expect(meta.audio).toBeFalsy();
-    });
-  });
-
-  // ─── fetchMetadata (with mocked HTTP) ─────────────────────────────
+  // ─── fetchMetadata ────────────────────────────────────────────────
   describe('fetchMetadata', () => {
     const validUrl = 'https://www.tiktok.com/@catdancer/video/7777777777';
 
     it('returns metadata for a valid URL', async () => {
-      const html = buildSigiHtml(sampleVideoData);
-      httpClient.get.mockResolvedValue({ data: html });
+      httpClient.get.mockResolvedValue(buildApiResponse());
 
       const meta = await tiktokService.fetchMetadata(validUrl);
 
       expect(meta.username).toBe('catdancer');
+      expect(meta.caption).toBe('Dancing cat video #viral');
       expect(meta.video_id).toBe('7777777777');
+      expect(meta.no_wm).toContain('video_nowm.mp4');
+      expect(meta.wm).toContain('video_wm.mp4');
+      expect(meta.audio).toContain('audio.mp3');
+      expect(meta.thumbnail).toContain('cover.jpg');
       expect(httpClient.get).toHaveBeenCalledTimes(1);
     });
 
     it('uses cache on second call', async () => {
-      const html = buildSigiHtml(sampleVideoData);
-      httpClient.get.mockResolvedValue({ data: html });
+      httpClient.get.mockResolvedValue(buildApiResponse());
 
       await tiktokService.fetchMetadata(validUrl);
       await tiktokService.fetchMetadata(validUrl);
 
-      // httpClient.get should only be called once thanks to caching
       expect(httpClient.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to nickname when unique_id missing', async () => {
+      httpClient.get.mockResolvedValue(
+        buildApiResponse({ author: { nickname: 'FallbackName' } })
+      );
+
+      const meta = await tiktokService.fetchMetadata(validUrl);
+      expect(meta.username).toBe('FallbackName');
+    });
+
+    it('falls back to origin_cover when cover missing', async () => {
+      httpClient.get.mockResolvedValue(
+        buildApiResponse({ cover: null, origin_cover: 'https://origin.jpg' })
+      );
+
+      const meta = await tiktokService.fetchMetadata(validUrl);
+      expect(meta.thumbnail).toBe('https://origin.jpg');
+    });
+
+    it('trims caption whitespace', async () => {
+      httpClient.get.mockResolvedValue(
+        buildApiResponse({ title: '  spaced out  ' })
+      );
+
+      const meta = await tiktokService.fetchMetadata(validUrl);
+      expect(meta.caption).toBe('spaced out');
     });
 
     it('throws for invalid TikTok URL', async () => {
@@ -169,8 +101,8 @@ describe('TikTokService', () => {
       ).rejects.toThrow();
     });
 
-    it('throws when metadata extraction fails', async () => {
-      httpClient.get.mockResolvedValue({ data: '<html></html>' });
+    it('throws when API returns error code', async () => {
+      httpClient.get.mockResolvedValue({ data: { code: -1, data: null } });
 
       await expect(tiktokService.fetchMetadata(validUrl)).rejects.toThrow(
         'Failed to extract video metadata'

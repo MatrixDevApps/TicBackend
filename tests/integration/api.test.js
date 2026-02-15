@@ -11,22 +11,24 @@ const httpClient = require('../../src/utils/httpClient');
 const app = require('../../src/app');
 const { cache } = require('../../src/utils/cache');
 
-// Build fake TikTok HTML with SIGI_STATE
-function buildTikTokHtml(overrides = {}) {
-  const videoData = {
-    id: '9999999999',
-    desc: 'Test video caption',
-    author: { uniqueId: 'testcreator', id: 'uid1' },
-    video: {
-      downloadAddr: 'https://v16.tiktokcdn.com/video_nowm.mp4',
-      playAddr: 'https://v16.tiktokcdn.com/video_play.mp4',
-      cover: 'https://p16.tiktokcdn.com/cover.jpg',
+// Build a fake tikwm API response
+function buildApiResponse(overrides = {}) {
+  return {
+    data: {
+      code: 0,
+      data: {
+        id: '9999999999',
+        title: 'Test video caption',
+        author: { unique_id: 'testcreator', nickname: 'Test Creator' },
+        play: 'https://v16.tiktokcdn.com/video_nowm.mp4',
+        wmplay: 'https://v16.tiktokcdn.com/video_wm.mp4',
+        music: 'https://sf16.tiktokcdn.com/music.mp3',
+        cover: 'https://p16.tiktokcdn.com/cover.jpg',
+        origin_cover: 'https://p16.tiktokcdn.com/origin_cover.jpg',
+        ...overrides,
+      },
     },
-    music: { playUrl: 'https://sf16.tiktokcdn.com/music.mp3' },
-    ...overrides,
   };
-  const sigiState = { ItemModule: { '9999999999': videoData } };
-  return `<html><script>window["SIGI_STATE"]=${JSON.stringify(sigiState)};</script></html>`;
 }
 
 const VALID_URL = 'https://www.tiktok.com/@testcreator/video/9999999999';
@@ -109,7 +111,7 @@ describe('GET /api/fetch', () => {
   });
 
   it('returns metadata for a valid TikTok URL', async () => {
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const res = await request(app).get(`/api/fetch?url=${encodeURIComponent(VALID_URL)}`);
 
@@ -139,7 +141,7 @@ describe('GET /api/v1/fetch', () => {
   });
 
   it('returns metadata (v1 works same as /api)', async () => {
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const res = await request(app).get(`/api/v1/fetch?url=${encodeURIComponent(VALID_URL)}`);
 
@@ -171,14 +173,14 @@ describe('GET /api/download', () => {
   });
 
   it('streams video for valid nowm download request', async () => {
-    // Mock fetchMetadata (first get call returns HTML)
-    httpClient.get.mockResolvedValue({
-      data: buildTikTokHtml(),
+    // First call: fetchMetadata via API
+    httpClient.get.mockResolvedValueOnce(buildApiResponse());
+    // Second call: getDirectDownloadURL
+    httpClient.get.mockResolvedValueOnce({
       request: { res: { responseUrl: 'https://final.cdn/video.mp4' } },
       config: { url: 'https://v16.tiktokcdn.com/video_nowm.mp4' },
     });
 
-    // Mock stream response
     const fakeStream = new Readable({
       read() {
         this.push(Buffer.from('fake-video-data'));
@@ -199,8 +201,8 @@ describe('GET /api/download', () => {
   });
 
   it('streams audio for valid audio download request', async () => {
-    httpClient.get.mockResolvedValue({
-      data: buildTikTokHtml(),
+    httpClient.get.mockResolvedValueOnce(buildApiResponse());
+    httpClient.get.mockResolvedValueOnce({
       request: { res: { responseUrl: 'https://final.cdn/music.mp3' } },
       config: { url: 'https://sf16.tiktokcdn.com/music.mp3' },
     });
@@ -232,8 +234,8 @@ describe('GET /api/v1/download', () => {
   });
 
   it('streams video (v1 works same as /api)', async () => {
-    httpClient.get.mockResolvedValue({
-      data: buildTikTokHtml(),
+    httpClient.get.mockResolvedValueOnce(buildApiResponse());
+    httpClient.get.mockResolvedValueOnce({
       request: { res: { responseUrl: 'https://final.cdn/video.mp4' } },
       config: { url: 'https://v16.tiktokcdn.com/video_nowm.mp4' },
     });
@@ -269,7 +271,7 @@ describe('API Key Authentication', () => {
 
   it('allows requests when API_KEYS env is not set', async () => {
     delete process.env.API_KEYS;
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const res = await request(app).get(`/api/fetch?url=${encodeURIComponent(VALID_URL)}`);
     expect(res.status).not.toBe(401);
@@ -296,7 +298,7 @@ describe('API Key Authentication', () => {
 
   it('accepts requests with correct API key in header', async () => {
     process.env.API_KEYS = 'my-secret-key';
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const res = await request(app)
       .get(`/api/fetch?url=${encodeURIComponent(VALID_URL)}`)
@@ -308,7 +310,7 @@ describe('API Key Authentication', () => {
 
   it('accepts requests with correct API key in query param', async () => {
     process.env.API_KEYS = 'query-key-456';
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const res = await request(app).get(
       `/api/fetch?url=${encodeURIComponent(VALID_URL)}&apikey=query-key-456`
@@ -320,7 +322,7 @@ describe('API Key Authentication', () => {
 
   it('supports multiple comma-separated API keys', async () => {
     process.env.API_KEYS = 'key-a, key-b, key-c';
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const resA = await request(app)
       .get(`/api/fetch?url=${encodeURIComponent(VALID_URL)}`)
@@ -347,7 +349,7 @@ describe('API Key Authentication', () => {
 // ─── Caching ────────────────────────────────────────────────────────
 describe('Caching', () => {
   it('serves cached response on second fetch', async () => {
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     const res1 = await request(app).get(`/api/fetch?url=${encodeURIComponent(VALID_URL)}`);
     expect(res1.status).toBe(200);
@@ -356,16 +358,12 @@ describe('Caching', () => {
     expect(res2.status).toBe(200);
     expect(res2.body.username).toBe('testcreator');
 
-    // httpClient.get called once for HTML fetch, possibly again for redirect
-    // But the key point: the TikTok page fetch should happen once
-    const htmlFetchCalls = httpClient.get.mock.calls.filter(
-      (call) => call[0].includes('tiktok.com')
-    );
-    expect(htmlFetchCalls.length).toBe(1);
+    // httpClient.get should only be called once thanks to caching
+    expect(httpClient.get).toHaveBeenCalledTimes(1);
   });
 
   it('cache stats appear in /health', async () => {
-    httpClient.get.mockResolvedValue({ data: buildTikTokHtml() });
+    httpClient.get.mockResolvedValue(buildApiResponse());
 
     // Make a fetch to populate cache
     await request(app).get(`/api/fetch?url=${encodeURIComponent(VALID_URL)}`);
